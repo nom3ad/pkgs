@@ -1,0 +1,68 @@
+#!/bin/bash
+set -euo pipefail
+
+version="2.17.0"
+name="opensearch-dashboards"
+url="https://artifacts.opensearch.org/releases/core/opensearch-dashboards/${version}/opensearch-dashboards-min-${version}-linux-x64.tar.gz"
+
+
+SCRIPT_FILE=$(realpath "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_FILE")
+
+dir="$SCRIPT_DIR/${name}.${version}.apps"
+
+APP_ROOT="$dir/opensearch-dashboards-${version}-linux-x64"
+SYNC_DIR="${dir}/out"
+
+function log() {
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $*"
+}
+
+function prepare() {
+    mkdir -p "${dir}"
+    cd "${dir}"
+    fname=$(basename "${url}")
+    if [[ ! -f "${fname}" ]]; then
+    curl -L -o "${fname}" "${url}"
+    tar -xf "${fname}"
+    fi
+}
+
+function analyze() {
+    cd "${1:-"$APP_ROOT"}"
+    log  "Analyzing app from '$(pwd)'"
+
+    bun ./src/cli/cli.js  -e http://go.dmo-test1.intra.matrixflowsapp.com:9200 &
+    osd_pid=$!
+
+    trap _cleanup EXIT
+    _cleanup() {
+        echo "Cleaning up"
+        kill "${osd_pid}"
+        sleep 1
+        kill -9 "${osd_pid}"
+        wait
+    }
+    sleep 10s
+    # timeout 30s chromium --headless --disable-gpu --no-sandbox http://localhost:5601/app/dev_tools#/console
+    timeout 30s chromium  http://localhost:5601/app/dev_tools#/console
+}
+
+function build() {
+    cmd=(
+        bash $SCRIPT_FILE python ./passthrough.py --root "$APP_ROOT" --log "$dir/passthrough.log"
+    )
+    cmd+=( --sync "$SYNC_DIR" )
+    cmd+=("bash $SCRIPT_FILE analyze .")
+    "${cmd[@]}"
+    du -sh "$SYNC_DIR"
+}
+
+function export() {
+    
+}
+
+
+"$@"
+ # All=5995 Files=4415 Read=4339 StatOnly=1656 TotalSize=22.58 MB
+ # All=5612 Files=4407 Read=4327 StatOnly=1285 TotalSize=19.66 MB
