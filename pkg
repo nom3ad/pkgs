@@ -5,6 +5,7 @@ export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 action="${1:?"action is required"}"
 recipe="${2:?"recipe is required"}"
+shift 2
 
 GIT_REMOTE=origin
 
@@ -67,6 +68,7 @@ function do_prepare() {
 }
 
 function ensure_clean_out_dir() {
+    cd "$WORK_DIR"
     first_commit=$(git rev-list --max-parents=0 HEAD)
     log "First commit is '$first_commit'"
     if [[ -d $OUT_DIR ]] && git -C "$OUT_DIR" rev-parse HEAD &>/dev/null; then
@@ -80,11 +82,12 @@ function ensure_clean_out_dir() {
 }
 
 function do_build() {
-    log "Entering work dir '$WORK_DIR'"
     cd "$WORK_DIR"
+    log "work dir '$(pwd)'"
     log "Ensure clean out dir"
     ensure_clean_out_dir
     app_root=$(prepare_root) || abort "Failed to prepare root"
+    app_root="$(realpath "$app_root")"
     [[ ! -d "$app_root" ]] && abort "App root'$app_root' does not exist"
     log "Found app root '$app_root'"
     cmd=(
@@ -93,14 +96,26 @@ function do_build() {
         --log "$WORK_DIR/passthrough.log"
     )
     cmd+=( --sync "$OUT_DIR" )
-    cmd+=("bash $SCRIPT_FILE exec_analyze $RECIPE_FILE")
-    with_set_x "${cmd[@]}"
+    cmd+=("bash $SCRIPT_FILE exec_analyze $RECIPE_FILE .")
+    with_set_x "${cmd[@]}" || true
+
+    if declare -f postbuild &>/dev/null; then
+        log "Running postbuild"
+        (postbuild) || abort "postbuild failed"
+    else
+        log "No postbuild function found"
+    fi
 
     log "Estimate outdir size"
     du -sh "$OUT_DIR"
 }
 
+function stats(){
+    dust "$OUT_DIR"
+}
+
 function do_publish() {
+    cd "$WORK_DIR"
     local tag="$NAME@$VERSION"
     log "Publish $tag"
     cd "$OUT_DIR"
@@ -116,6 +131,7 @@ function _on_exit() {
 }
 
 function exec_analyze() {
+    cd "${1:?"app root is required"}"
     log  "Analyzing app from '$(pwd)'"
     trap _on_exit SIGINT SIGTERM EXIT
     analyze
@@ -128,8 +144,18 @@ function exec_bun() {
 
 function browser_navigate() {
     # timeout 30s chromium --headless --disable-gpu --no-sandbox $1
-    with_set_x timeout 30s chromium  "$1"
+    tmp_data_dir=$(mktemp -d -t pkg_browser-XXXXXX)
+    chrome_args=(
+        # --headless
+        --disable-gpu
+        --no-sandbox
+        --user-data-dir="$tmp_data_dir"
+        --disable-extensions
+        --disable-web-security
+    )
+    with_set_x timeout 30s chromium "${chrome_args[@]}" "$1"
 }
+
 
 case "$action" in
     prepare)
@@ -141,13 +167,15 @@ case "$action" in
         ;;
     test-analyze)
         app_root=$(prepare_root) || abort "Failed to prepare root"
-        cd "$WORK_DIR/$app_root"
-        exec_analyze
+        exec_analyze "$WORK_DIR/$app_root"
         ;;
+    test-out)
+        exec_analyze "$OUT_DIR"
+    ;;
     publish)
         do_publish
         ;;
     *)
-        "$action"
+        "$action" "$@"
         ;;
 esac
