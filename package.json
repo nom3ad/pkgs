@@ -1,0 +1,28 @@
+{
+  "name": "opensearch-dashboards",
+  "description": "OpenSearch Dashboards is a browser based analytics and search dashboard for OpenSearch. OpenSearch Dashboards is a snap to setup and start using. OpenSearch Dashboards strives to be easy to get started with, while also being flexible and powerful, just like OpenSearch.",
+  "keywords": [
+    "opensearch-dashboards",
+    "opensearch",
+    "logstash",
+    "analytics",
+    "visualizations",
+    "dashboards",
+    "dashboarding"
+  ],
+  "version": "2.19.2",
+  "branch": "2.x",
+  "build": {
+    "number": 8420,
+    "sha": "764d142b5d2f9dff04a930289677907981d2920b",
+    "distributable": true,
+    "release": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opensearch-project/opensearch-dashboards.git"
+  },
+  "engines": {
+    "node": ">=14.20.1 <19"
+  }
+}
