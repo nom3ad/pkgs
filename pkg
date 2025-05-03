@@ -1,0 +1,153 @@
+#!/bin/bash
+set -euo pipefail
+
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+action="${1:?"action is required"}"
+recipe="${2:?"recipe is required"}"
+
+GIT_REMOTE=origin
+
+function log() {
+    echo -e "[$(date +"%Y-%m-%d %H:%M:%S")] $*" >&2
+}
+
+function with_set_x() {
+    set -x
+    "$@" || {
+        ec=$?
+        set +x
+        return "$ec"
+    } 2>/dev/null
+    { set +x; } 2>/dev/null
+}
+
+function abort() {
+    log "\e[31m$*\e[0m"
+    exit 1
+}
+
+SCRIPT_FILE=$(realpath "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_FILE")
+
+if [[ -f $recipe ]]; then
+    RECIPE_FILE="$(realpath "$recipe")"
+else
+    RECIPE_FILE="$(realpath "$recipe.pkg.sh")"
+fi
+
+RECIPE_DIR=$(dirname "$SCRIPT_FILE")
+BUILD_ROOT_DIR="$RECIPE_DIR/build"
+
+
+source "$RECIPE_FILE"
+
+WORK_DIR="$BUILD_ROOT_DIR/$NAME@$VERSION"
+OUT_DIR="$WORK_DIR/out"
+
+mkdir -p "$WORK_DIR"
+
+function do_prepare() {
+    cd "$WORK_DIR"
+    for s in "${SOURCES[@]}"; do
+        case "$s" in
+            *.tar.gz)
+                local fname=$(basename "${s}")
+                if [[ ! -f "${fname}" ]]; then
+                    curl -L -o "${fname}" "${s}"
+                    tar -xf "${fname}"
+                fi
+                ;;
+            *)
+                echo "Unknown source '$s'"
+                exit 1
+                ;;
+        esac
+    done
+}
+
+function ensure_clean_out_dir() {
+    first_commit=$(git rev-list --max-parents=0 HEAD)
+    log "First commit is '$first_commit'"
+    if [[ -d $OUT_DIR ]] && git -C "$OUT_DIR" rev-parse HEAD &>/dev/null; then
+        log "Worktree '$OUT_DIR' exists"
+    else
+        with_set_x git worktree add --relative-paths "$OUT_DIR" "$first_commit"
+    fi
+    git worktree prune --verbose
+    with_set_x git -C "$OUT_DIR" checkout -f "$first_commit"
+    with_set_x git -C "$OUT_DIR" reset --hard
+}
+
+function do_build() {
+    log "Entering work dir '$WORK_DIR'"
+    cd "$WORK_DIR"
+    log "Ensure clean out dir"
+    ensure_clean_out_dir
+    app_root=$(prepare_root) || abort "Failed to prepare root"
+    [[ ! -d "$app_root" ]] && abort "App root'$app_root' does not exist"
+    log "Found app root '$app_root'"
+    cmd=(
+        python $SCRIPT_DIR/passthrough.py
+        --root "$app_root"
+        --log "$WORK_DIR/passthrough.log"
+    )
+    cmd+=( --sync "$OUT_DIR" )
+    cmd+=("bash $SCRIPT_FILE exec_analyze $RECIPE_FILE")
+    with_set_x "${cmd[@]}"
+
+    log "Estimate outdir size"
+    du -sh "$OUT_DIR"
+}
+
+function do_publish() {
+    local tag="$NAME@$VERSION"
+    log "Publish $tag"
+    cd "$OUT_DIR"
+    with_set_x git add . || abort "Failed to add files"
+    with_set_x git commit -m "Publish $tag" || abort "Failed to commit"
+    with_set_x git tag -f "$tag" || abort "Failed to tag $tag"
+    with_set_x git push -f $GIT_REMOTE "$tag" || abort "Failed to push tag $tag"
+}
+
+function _on_exit() {
+    trap - SIGTERM
+    kill -- -$$
+}
+
+function exec_analyze() {
+    log  "Analyzing app from '$(pwd)'"
+    trap _on_exit SIGINT SIGTERM EXIT
+    analyze
+    exit $?
+}
+
+function exec_bun() {
+    with_set_x bun -r $SCRIPT_DIR/bun-polyfill.js "$@"
+}
+
+function browser_navigate() {
+    # timeout 30s chromium --headless --disable-gpu --no-sandbox $1
+    with_set_x timeout 30s chromium  "$1"
+}
+
+case "$action" in
+    prepare)
+        do_prepare
+        ;;
+    build)
+        do_prepare
+        do_build
+        ;;
+    test-analyze)
+        app_root=$(prepare_root) || abort "Failed to prepare root"
+        cd "$WORK_DIR/$app_root"
+        exec_analyze
+        ;;
+    publish)
+        do_publish
+        ;;
+    *)
+        "$action"
+        ;;
+esac
